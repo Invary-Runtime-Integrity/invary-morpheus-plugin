@@ -1,0 +1,172 @@
+<div class="invary-report">
+
+  {{#if header}}
+    {{#with header.[0]}}
+
+    <!-- Fleet Status Banner -->
+    <div class="fleet-banner {{dataMap.bannerClass}}">
+      <div class="fleet-banner-icon">
+        <!-- the logo ships as a plugin asset; the helper resolves it under
+             /assets/plugin/invary/ from src/assets/images/invary.svg -->
+        <img src="{{asset '/invary.svg'}}" width="32" height="32" alt="Invary">
+      </div>
+      <div class="fleet-banner-text">
+        <h4>Fleet Integrity: {{dataMap.fleetStatus}}</h4>
+        <p>
+          Report generated:
+          <span class="invary-time" data-utc="{{dataMap.generatedAtIso}}">{{dataMap.generatedAt}}</span>
+          &middot; Last appraisal:
+          <span class="invary-time" data-utc="{{dataMap.lastAppraisalIso}}">{{dataMap.lastAppraisal}}</span>
+        </p>
+      </div>
+    </div>
+
+    <!-- Summary Cards -->
+    <div class="summary-cards">
+      <div class="summary-card">
+        <span class="summary-value">{{dataMap.totalServers}}</span>
+        <span class="summary-label">Monitored Servers</span>
+      </div>
+      <div class="summary-card summary-passed">
+        <span class="summary-value">{{dataMap.passing}}</span>
+        <span class="summary-label">Passing</span>
+      </div>
+      <div class="summary-card summary-failed">
+        <span class="summary-value">{{dataMap.failing}}</span>
+        <span class="summary-label">Failing</span>
+      </div>
+      <div class="summary-card summary-warning">
+        <span class="summary-value">{{dataMap.offline}}</span>
+        <span class="summary-label">Offline</span>
+      </div>
+    </div>
+
+    {{/with}}
+  {{/if}}
+
+  <!-- Server Details Table -->
+  <div class="box box-primary">
+    <div class="box-header with-border">
+      <h3 class="box-title">Server Details</h3>
+    </div>
+    <div class="box-body">
+      {{#if main}}
+        <table class="table table-condensed table-bordered table-hover">
+          <thead>
+            <tr>
+              <th>Server</th>
+              <th>Instance</th>
+              <th>IP Address</th>
+              <th>Status</th>
+              <th>Checks</th>
+              <th>Failed</th>
+              <th>OS</th>
+              <th>Kernel</th>
+              <th>Sensor</th>
+              <th>Last Appraisal</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{#each main}}
+              <tr class="{{dataMap.rowClass}}">
+                <td>
+                  {{#if dataMap.url}}
+                    <a href="{{dataMap.url}}"><strong>{{dataMap.server}}</strong></a>
+                  {{else}}
+                    <strong>{{dataMap.server}}</strong>
+                  {{/if}}
+                </td>
+                <td>
+                  {{#if dataMap.instanceUrl}}
+                    <a href="{{dataMap.instanceUrl}}">{{dataMap.instanceId}}</a>
+                  {{else}}
+                    {{dataMap.instanceId}}
+                  {{/if}}
+                </td>
+                <td>{{dataMap.ip}}</td>
+                <td>
+                  <span class="label {{dataMap.labelClass}}">{{dataMap.status}}</span>
+                </td>
+                <td>{{dataMap.checks}}</td>
+                <td>{{dataMap.failed}}</td>
+                <td>{{dataMap.os}}</td>
+                <td>{{dataMap.kernel}}</td>
+                <td>{{dataMap.sensor}}</td>
+                <td class="invary-time" data-utc="{{dataMap.lastAppraisalIso}}">{{dataMap.lastAppraisal}}</td>
+              </tr>
+            {{/each}}
+          </tbody>
+        </table>
+      {{else}}
+        <p class="text-muted">
+          The appraiser has not appraised any Morpheus instances yet. An instance appears here once
+          its sensor uploads a measurement tagged with its Morpheus instance id.
+        </p>
+      {{/if}}
+    </div>
+  </div>
+
+</div>
+
+<style>
+  .invary-report { padding: 12px; }
+
+  /* Fleet banner */
+  .fleet-banner {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 16px 20px;
+    border-radius: 4px;
+    margin-bottom: 16px;
+  }
+  .fleet-banner-icon { flex: 0 0 auto; line-height: 0; }
+  .fleet-banner-icon img { display: block; width: 32px; height: 32px; }
+  .fleet-banner h4 { margin: 0; }
+  .fleet-banner p { margin: 4px 0 0; font-size: 12px; opacity: 0.85; }
+  .fleet-ok       { background: #dff0d8; border: 1px solid #d6e9c6; color: #3c763d; }
+  .fleet-degraded { background: #fcf8e3; border: 1px solid #faebcc; color: #8a6d3b; }
+  .fleet-critical { background: #f2dede; border: 1px solid #ebccd1; color: #a94442; }
+
+  /* Summary cards */
+  .summary-cards { display: flex; gap: 16px; margin-bottom: 20px; }
+  .summary-card {
+    flex: 1;
+    text-align: center;
+    padding: 18px 12px;
+    background: #f5f5f5;
+    border-radius: 4px;
+    border: 1px solid #ddd;
+  }
+  .summary-card .summary-value {
+    display: block;
+    font-size: 32px;
+    font-weight: bold;
+    color: #333;
+  }
+  .summary-card .summary-label {
+    display: block;
+    font-size: 11px;
+    color: #777;
+    text-transform: uppercase;
+    margin-top: 4px;
+  }
+  .summary-passed .summary-value { color: #3c763d; }
+  .summary-failed .summary-value { color: #a94442; }
+  .summary-warning .summary-value { color: #8a6d3b; }
+</style>
+
+<script nonce="{{nonce ''}}">
+  // the report is generated on the server in UTC, so restate each time in the timezone of
+  // whoever is reading it. The UTC value rendered into the page stands when this does not
+  // run.
+  (function () {
+    var times = document.querySelectorAll('.invary-time[data-utc]');
+    for (var i = 0; i < times.length; i++) {
+      var when = new Date(times[i].getAttribute('data-utc'));
+      if (!isNaN(when.getTime())) {
+        times[i].textContent = when.toLocaleString();
+      }
+    }
+  })();
+</script>

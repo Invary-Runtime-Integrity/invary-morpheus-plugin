@@ -1,0 +1,29 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# VS Code
+.vscode/
+
+# IDE-added Groovy libs (resolved from Maven, not needed in VCS)
+src/lib/
+
+# Editor and OS junk
+*.swp
+*.swo
+*.swx
+*~
+*.log
+.DS_Store
+Thumbs.db
+
+# Coding harnesses
+.claude/

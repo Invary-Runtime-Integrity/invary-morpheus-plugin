@@ -1,0 +1,131 @@
+buildscript {
+    repositories {
+        mavenCentral()
+        maven { url "https://plugins.gradle.org/m2/" }
+    }
+    dependencies {
+        classpath "com.morpheusdata:morpheus-plugin-gradle:$morpheusGradleVersion"
+        classpath "com.bertramlabs.plugins:asset-pipeline-gradle:$assetPipelineVersion"
+    }
+}
+
+apply plugin: 'java'
+apply plugin: 'groovy'
+apply plugin: 'idea'
+apply plugin: 'asset-pipeline'
+apply plugin: 'com.morpheusdata.morpheus-plugin-gradle'
+
+group = 'com.invary.hpe.morpheus'
+
+// CI passes -Pversion=<tag>.<commit distance>; a bare local build is explicitly not releasable
+if (project.version == Project.DEFAULT_VERSION) {
+    version = '0.0.0-dev'
+}
+
+java {
+    sourceCompatibility = JavaVersion.toVersion('1.11')
+    targetCompatibility = JavaVersion.toVersion('1.11')
+}
+
+repositories {
+    mavenCentral()
+}
+
+configurations {
+    provided
+}
+
+dependencies {
+    // supplied by Morpheus at runtime - compile against it but don't bundle it
+    provided "com.morpheusdata:morpheus-plugin-api:$morpheusApiVersion"
+    provided "org.codehaus.groovy:groovy-all:$groovyVersion"
+    provided "io.reactivex.rxjava3:rxjava:$rxJavaVersion"
+    provided "org.apache.httpcomponents:httpclient:$httpClientVersion"
+    provided "org.apache.httpcomponents:httpcore:$httpCoreVersion"
+
+    // Morpheus supplies slf4j-api at runtime, and the plugin must use the host's binding so its
+    // log lines reach the appliance log. Bundling an unbound slf4j-api risks a NOPLogger under an
+    // isolated plugin classloader, which loses plugin logging silently. sourceSets.test below
+    // puts 'provided' on the test classpath, so the specs still compile against it.
+    provided "org.slf4j:slf4j-api:$slf4jVersion"
+
+    testImplementation "org.codehaus.groovy:groovy-all:$groovyVersion"
+    testImplementation platform("org.spockframework:spock-bom:$spockVersion")
+    testImplementation "org.spockframework:spock-core"
+}
+
+
+sourceSets {
+    main {
+        compileClasspath += configurations.provided
+    }
+
+    // the specs that cover which script an install chooses need the Morpheus types the
+    // installer is written against. Everything Morpheus supplies at runtime it also has to
+    // supply to a test that runs without it
+    test {
+        compileClasspath += configurations.provided
+        runtimeClasspath += configurations.provided
+    }
+}
+
+// plugin metadata written into the jar
+jar {
+    // asset-pipeline injects a jQuery webjar into build/assets that nothing here references.
+    // Shipping it would redistribute MIT-licensed code without its notice, so keep it out.
+    // Both patterns: the assets are copied in with an 'assets' prefix, so depending on how
+    // the copy spec is wired the exclude may be matched against either path.
+    exclude 'assets/webjars/**'
+    exclude 'webjars/**'
+
+    manifest {
+        attributes(
+                'Plugin-Class': 'com.invary.hpe.morpheus.InvaryPlugin',
+                'Plugin-Version': version,
+                'Morpheus-Name': 'Invary',
+                'Morpheus-Organization': 'Invary',
+                'Morpheus-Code': 'invary',
+                'Morpheus-Description': 'Invary Plugin',
+                'Morpheus-Logo': 'assets/invary.svg',
+                'Morpheus-Logo-Dark': 'assets/invary.svg',
+                'Morpheus-Labels': 'Plugin',
+                'Morpheus-Repo': 'https://invary.com',
+                'Morpheus-Min-Appliance-Version': "6.3.0"
+        )
+    }
+}
+
+assets {
+    packagePlugin = false //leave this false for plugins
+}
+
+
+task(console, dependsOn: 'classes', type: JavaExec) {
+    main = 'groovy.ui.Console'
+    classpath = sourceSets.main.compileClasspath + sourceSets.main.runtimeClasspath
+}
+
+test {
+    // Spock 2 depends on the JUnit platform
+    useJUnitPlatform()
+
+    testLogging {
+        exceptionFormat = 'full'
+        showStandardStreams = true
+    }
+}
+
+// everything Morpheus supplies belongs in 'provided'; nothing should need bundling, which is
+// what lets the build ship a single plain jar with no shadowing
+tasks.register('verifyNothingBundled') {
+    doLast {
+        def bundled = configurations.runtimeClasspath.resolve()
+        if (!bundled.isEmpty()) {
+            throw new GradleException(
+                    "runtimeClasspath is not empty: ${bundled*.name}. Anything Morpheus provides " +
+                    "belongs in the 'provided' configuration. If a dependency genuinely must ship " +
+                    "inside the plugin jar, reintroduce Shadow deliberately and update the release docs.")
+        }
+    }
+}
+tasks.named('check') { dependsOn 'verifyNothingBundled' }

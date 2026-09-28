@@ -1,0 +1,196 @@
+<div id="vme-tab" class="vme-tab-container">
+  {{#if error}}
+    <div class="alert alert-warning"><i class="fa fa-exclamation-triangle"></i> {{error}}</div>
+  {{/if}}
+
+  {{#if status}}
+    <!-- ── Appraisal Summary ──────────────────────────────────────────────────── -->
+    <div class="box box-primary">
+      <div class="box-header with-border">
+        <h3 class="box-title"><i class="fa fa-server"></i> Last Invary Appraisal</h3>
+      </div>
+      <div class="box-body">
+        <table class="table table-condensed table-bordered vme-info-table">
+          <tbody>
+            <tr>
+              <th>Status</th>
+              <td>
+                <span class="label {{statusLabel}}">{{status}}</span>
+              </td>
+              <th>Appraisal ID</th>
+              <td><code>{{id}}</code></td>
+            </tr>
+            <tr>
+              <th>Endpoint</th>
+              <td>{{node.name}}</td>
+              <th>Uptime (sec)</th>
+              <td>{{node.uptime}}</td>
+            </tr>
+            <tr>
+              <th>OS Distribution</th>
+              <td>{{distribution.vendor}} {{distribution.release}}{{#if distribution.codename}} ({{distribution.codename}}){{/if}}</td>
+              <th>Processor</th>
+              <td>{{node.processor}}</td>
+            </tr>
+            <tr>
+              <th>Kernel</th>
+              <td colspan="3">{{kernel.name}} {{kernel.release}}</td>
+            </tr>
+            <tr>
+              <th>Kernel Version</th>
+              <td colspan="3"><small>{{kernel.version}}</small></td>
+            </tr>
+            <tr>
+              <th>Created</th>
+              <td>{{created}}</td>
+              <th>Agent Version</th>
+              <td>{{agent.version}}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── Measurement ────────────────────────────────────────────────────────── -->
+    {{#if measurement}}
+    <div class="box box-default">
+      <div class="box-header with-border">
+        <h3 class="box-title"><i class="fa fa-bar-chart"></i> Measurement</h3>
+      </div>
+      <div class="box-body">
+        <table class="table table-condensed table-bordered vme-info-table">
+          <tbody>
+            <tr>
+              <th>Nodes</th>
+              <td>{{measurement.nodes}}</td>
+              <th>Edges</th>
+              <td>{{measurement.edges}}</td>
+              <th>Modules</th>
+              <td>{{measurement.modules}}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {{/if}}
+
+    <!-- ── Checks ─────────────────────────────────────────────────────────────── -->
+    {{#if checks}}
+    <div class="box box-default">
+      <div class="box-header with-border">
+        <h3 class="box-title"><i class="fa fa-check-circle"></i> Checks</h3>
+      </div>
+      <div class="box-body">
+        <table class="table table-condensed table-bordered table-striped">
+          <thead>
+            <tr>
+              <th>Check</th>
+              <th>Result</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{#each checks}}
+            <tr>
+              <td>{{this.name}}</td>
+              <td><span class="label {{this.resultLabel}}">{{this.result}}</span></td>
+            </tr>
+            {{#if this.failureDetails}}
+            {{#each this.failureDetails}}
+            <tr class="danger">
+              <td colspan="2" style="padding-left:30px;">
+                <small><strong>Node:</strong> <code>{{this.atNode}}</code><br/><strong>Reason:</strong> {{this.reason}}</small>
+              </td>
+            </tr>
+            {{/each}}
+            {{/if}}
+            {{/each}}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {{/if}}
+
+    <!-- ── Tags ───────────────────────────────────────────────────────────────── -->
+    {{#if node.tags}}
+    <div class="box box-default">
+      <div class="box-header with-border">
+        <h3 class="box-title"><i class="fa fa-tags"></i> Endpoint Tags</h3>
+      </div>
+      <div class="box-body">
+        {{#each node.tags}}
+          <span class="label label-info" style="margin-right:4px;">{{this}}</span>
+        {{/each}}
+      </div>
+    </div>
+    {{/if}}
+
+    <!-- ── Network ────────────────────────────────────────────────────────────── -->
+    {{#if network}}
+    <div class="box box-default">
+      <div class="box-header with-border">
+        <h3 class="box-title"><i class="fa fa-globe"></i> Network</h3>
+      </div>
+      <div class="box-body">
+        <table class="table table-condensed table-bordered vme-info-table">
+          <tbody>
+            {{#if network.ipv4Addrs}}
+            <tr>
+              <th>IPv4</th>
+              <td colspan="3">{{#each network.ipv4Addrs}}{{#unless @first}}, {{/unless}}{{this}}{{/each}}</td>
+            </tr>
+            {{/if}}
+            {{#if network.ipv6Addrs}}
+            <tr>
+              <th>IPv6</th>
+              <td colspan="3">{{#each network.ipv6Addrs}}{{#unless @first}}, {{/unless}}{{this}}{{/each}}</td>
+            </tr>
+            {{/if}}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {{/if}}
+
+    <!-- ── Info ───────────────────────────────────────────────────────────────── -->
+    {{#if info}}
+    <div class="box box-default">
+      <div class="box-header with-border">
+        <h3 class="box-title"><i class="fa fa-info-circle"></i> Info</h3>
+      </div>
+      <div class="box-body">
+        {{#each info}}
+        <div class="panel panel-info">
+          <div class="panel-heading">
+            <strong>{{this.name}}</strong> <span class="label label-default">{{this.level}}</span>
+          </div>
+          <div class="panel-body">
+            {{#each this.details}}
+              <p>{{this.description}}</p>
+              {{#if this.value}}
+              <ul>
+                {{#each this.value}}
+                  <li><code>{{this}}</code></li>
+                {{/each}}
+              </ul>
+              {{/if}}
+            {{/each}}
+          </div>
+        </div>
+        {{/each}}
+      </div>
+    </div>
+    {{/if}}
+  {{/if}}
+
+  {{#unless status}}
+    {{#unless error}}
+      <p class="text-muted">No Appraisal information available for this instance.</p>
+    {{/unless}}
+  {{/unless}}
+</div>
+
+<style>
+  .vme-tab-container { padding: 12px; }
+  .vme-info-table th { white-space: nowrap; background: #f5f5f5; }
+  .vme-info-table td { word-break: break-all; }
+</style>
