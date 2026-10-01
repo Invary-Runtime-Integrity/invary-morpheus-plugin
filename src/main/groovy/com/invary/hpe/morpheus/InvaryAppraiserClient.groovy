@@ -5,6 +5,7 @@ package com.invary.hpe.morpheus
 
 import groovy.json.JsonSlurper
 import groovy.util.logging.Slf4j
+import org.apache.http.client.config.RequestConfig
 import org.apache.http.client.methods.HttpGet
 import org.apache.http.conn.ssl.NoopHostnameVerifier
 import org.apache.http.conn.ssl.SSLConnectionSocketFactory
@@ -26,6 +27,11 @@ import org.apache.http.util.EntityUtils
  */
 @Slf4j
 class InvaryAppraiserClient {
+
+    // the appraiser is normally on the local network; these bound a hung or unreachable
+    // appraiser so morpheus threads are not blocked indefinitely
+    private static final int CONNECT_TIMEOUT_MS = 10_000
+    private static final int SOCKET_TIMEOUT_MS = 30_000
 
     private final String baseUrl
     private final String apiToken
@@ -100,7 +106,7 @@ class InvaryAppraiserClient {
      */
     private Object getJson(String path) {
         String url = "${baseUrl}${path}"
-        log.info("Fetching from Invary Appraiser: ${url}")
+        log.debug("Fetching from Invary Appraiser: ${url}")
 
         CloseableHttpClient httpClient = createHttpClient()
         try {
@@ -120,7 +126,7 @@ class InvaryAppraiserClient {
                 }
 
                 if (statusCode == 404) {
-                    log.info("Invary Appraiser has no resource at ${path} (HTTP 404)")
+                    log.debug("Invary Appraiser has no resource at ${path} (HTTP 404)")
                     return null
                 }
 
@@ -152,6 +158,15 @@ class InvaryAppraiserClient {
             .build()
         def sslSocketFactory = new SSLConnectionSocketFactory(sslContext, NoopHostnameVerifier.INSTANCE)
 
-        return HttpClients.custom().setSSLSocketFactory(sslSocketFactory).build()
+        def requestConfig = RequestConfig.custom()
+            .setConnectTimeout(CONNECT_TIMEOUT_MS)
+            .setConnectionRequestTimeout(CONNECT_TIMEOUT_MS)
+            .setSocketTimeout(SOCKET_TIMEOUT_MS)
+            .build()
+
+        return HttpClients.custom()
+            .setSSLSocketFactory(sslSocketFactory)
+            .setDefaultRequestConfig(requestConfig)
+            .build()
     }
 }

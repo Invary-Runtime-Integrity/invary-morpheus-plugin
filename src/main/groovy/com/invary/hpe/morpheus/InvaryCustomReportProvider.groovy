@@ -118,12 +118,16 @@ class InvaryCustomReportProvider extends AbstractReportProvider {
             }
 
             Map fleet = client.fetchFleetReport() ?: [:]
-            List servers = ((fleet.endpoints ?: []) as List).collect { entry -> serverRow(entry as Map) }
 
-            int totalServers = asCount(fleet.total_endpoints)
-            int passingCount = asCount(fleet.passing_endpoints)
-            int failingCount = asCount(fleet.failing_endpoints)
-            int offlineCount = asCount(fleet.offline_endpoints)
+            // the report covers the tenant it was run for, not the whole appliance, so the rows
+            // are scoped and then counted here rather than taken from the appraiser's own totals
+            List scoped = InvaryFleetSummary.scopeToAccount(morpheus, reportResult.account, (fleet.endpoints ?: []) as List)
+            List servers = scoped.collect { entry -> serverRow(entry as Map) }
+
+            int totalServers = servers.size()
+            int passingCount = servers.count { it.status == 'PASSED' }
+            int failingCount = servers.count { it.status == 'FAILED' }
+            int offlineCount = servers.count { it.status == 'OFFLINE' }
 
             String fleetStatus = InvaryFleetSummary.fleetStatus(totalServers, failingCount, offlineCount)
             String latest = servers.collect { it.lastAppraisalIso }.findAll { it }.max()

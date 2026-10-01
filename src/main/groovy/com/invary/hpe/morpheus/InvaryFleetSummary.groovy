@@ -5,6 +5,8 @@ package com.invary.hpe.morpheus
 
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.Plugin
+import com.morpheusdata.core.data.DataQuery
+import com.morpheusdata.model.Account
 import groovy.util.logging.Slf4j
 
 /**
@@ -22,10 +24,15 @@ class InvaryFleetSummary {
     static final int LIST_LIMIT = 100
 
     /**
-     * Loads the summary. The result always holds the counts and the list, so a widget can render
-     * it without checking, and carries `error` when the appraiser could not be read.
+     * Loads the summary for one tenant. The result always holds the counts and the list, so a
+     * widget can render it without checking, and carries `error` when the appraiser could not be
+     * read.
+     *
+     * @param account the tenant the summary is for. One appraiser serves the whole appliance, so
+     *                its report covers every tenant and is scoped here to the machines this one
+     *                owns. A null account is scoped to nothing rather than to everything.
      */
-    static Map load(MorpheusContext morpheus, Plugin plugin) {
+    static Map load(MorpheusContext morpheus, Plugin plugin, Account account) {
         Map summary = empty()
 
         try {
@@ -41,11 +48,9 @@ class InvaryFleetSummary {
                 return summary
             }
 
-            summary.total = count(report.total_endpoints)
-            summary.passing = count(report.passing_endpoints)
-            summary.failing = count(report.failing_endpoints)
-            summary.offline = count(report.offline_endpoints)
-            summary.endpoints = ((report.endpoints ?: []) as List).collect { entry -> endpoint(entry as Map) }
+            List scoped = scopeToAccount(morpheus, account, (report.endpoints ?: []) as List)
+            summary.endpoints = scoped.collect { entry -> endpoint(entry as Map) }
+            summary.putAll(counts(summary.endpoints as List))
         } catch (Exception e) {
             log.error("Could not read the Invary fleet report: ${e.message}", e)
             summary = empty()
@@ -53,6 +58,58 @@ class InvaryFleetSummary {
         }
 
         return summary
+    }
+
+    /**
+     * Keeps the fleet report entries that report on a machine the tenant owns.
+     *
+     * The appraiser serves one report for the whole appliance, and every entry it holds names the
+     * Morpheus server it was measured on, so the tenant a row belongs to is the tenant of that
+     * server. Morpheus is asked which servers those are rather than the account being compared
+     * here, so a row is kept only when the platform itself says the tenant may see it.
+     */
+    static List scopeToAccount(MorpheusContext morpheus, Account account, List entries) {
+        if (!account) {
+            log.warn('No tenant was supplied for the Invary fleet report, so no machines are reported')
+            return []
+        }
+
+        return scopeToVisible(entries, visibleServerIds(morpheus, account))
+    }
+
+    /** Keeps the entries whose server is one of the given ids. */
+    static List scopeToVisible(List entries, Set<String> visibleServerIds) {
+        return (entries ?: []).findAll { entry ->
+            String serverId = ((Map) entry)?.server_id?.toString()
+            return serverId && visibleServerIds.contains(serverId)
+        }
+    }
+
+    /** The ids of the Morpheus servers the tenant may see, as Morpheus reports them. */
+    static Set<String> visibleServerIds(MorpheusContext morpheus, Account account) {
+        List projections = morpheus.async.computeServer
+            .listIdentityProjections(new DataQuery(account))
+            .toList()
+            .blockingGet()
+
+        return projections.collect { it.id?.toString() }.findAll { it } as Set
+    }
+
+    /**
+     * Counts the scoped rows, which the appraiser cannot do for a tenant: its own totals cover the
+     * whole appliance. A row that is neither passing, failing nor offline -- an errored or unknown
+     * appraisal -- is counted in the total alone, as the lists of failing and offline machines
+     * leave it out too.
+     */
+    static Map counts(List endpoints) {
+        List rows = endpoints ?: []
+
+        return [
+            total  : rows.size(),
+            passing: rows.count { !it.offline && it.status == 'successful' },
+            failing: rows.count { !it.offline && it.status == 'failed' },
+            offline: rows.count { it.offline },
+        ]
     }
 
     static Map empty() {

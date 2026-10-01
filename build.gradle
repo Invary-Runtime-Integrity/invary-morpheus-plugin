@@ -82,10 +82,10 @@ jar {
         attributes(
                 'Plugin-Class': 'com.invary.hpe.morpheus.InvaryPlugin',
                 'Plugin-Version': version,
-                'Morpheus-Name': 'Invary',
+                'Morpheus-Name': 'Invary Integrity Measurement',
                 'Morpheus-Organization': 'Invary',
                 'Morpheus-Code': 'invary',
-                'Morpheus-Description': 'Invary Plugin',
+                'Morpheus-Description': 'Invary Runtime Integrity integration',
                 'Morpheus-Logo': 'assets/invary.svg',
                 'Morpheus-Logo-Dark': 'assets/invary.svg',
                 'Morpheus-Labels': 'Plugin',

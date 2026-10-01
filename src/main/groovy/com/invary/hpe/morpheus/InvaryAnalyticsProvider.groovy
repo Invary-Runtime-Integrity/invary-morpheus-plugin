@@ -103,7 +103,8 @@ class InvaryAnalyticsProvider extends AbstractAnalyticsProvider {
 
     @Override
     ServiceResponse<Map<String, Object>> loadData(User user, Map<String, Object> opts) {
-        Map summary = InvaryFleetSummary.load(morpheusContext, plugin)
+        // the view reports on the tenant of whoever is looking at it, not on the whole appliance
+        Map summary = InvaryFleetSummary.load(morpheusContext, plugin, user?.account)
         summary.failingServers = InvaryFleetSummary.failing(summary)
         summary.overflow = InvaryFleetSummary.overflow(summary)
         summary.offlineServers = InvaryFleetSummary.offline(summary)

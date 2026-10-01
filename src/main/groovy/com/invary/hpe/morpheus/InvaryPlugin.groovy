@@ -16,7 +16,7 @@ class InvaryPlugin extends Plugin {
     @Override
     void initialize() {
         this.setName("Invary Integrity Measurement")
-        this.setDescription("Invary Runtime Integrity integration plugin.")
+        this.setDescription("Invary Runtime Integrity integration")
         this.setAuthor("Invary")
         this.setSourceCodeLocationUrl("https://www.invary.com")
         this.setIssueTrackerUrl("https://www.invary.com")
