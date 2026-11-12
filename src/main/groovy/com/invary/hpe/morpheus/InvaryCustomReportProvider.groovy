@@ -144,6 +144,9 @@ class InvaryCustomReportProvider extends AbstractReportProvider {
                 lastAppraisalIso: latest,
                 generatedAt     : InvaryTimes.now(),
                 generatedAtIso  : Instant.now().toString(),
+                // a stored report carries the warning of the run that produced it; an empty
+                // string rather than null keeps every header row's values strings
+                appraiserWarning: client.warning ?: '',
             ]
             ReportResultRow summaryRow = new ReportResultRow(
                 section: ReportResultRow.SECTION_HEADER,

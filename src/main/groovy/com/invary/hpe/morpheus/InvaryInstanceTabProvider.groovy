@@ -62,13 +62,14 @@ class InvaryInstanceTabProvider extends AbstractInstanceTabProvider implements I
         Map data = [instance: instance, tabTitle: 'Invary Info', error: null]
 
         try {
-            InvaryAppraiserClient client = InvarySettings.appraiserClient(morpheus, plugin)
+            InvaryAppraiserClient client = InvarySettings.interactiveClient(morpheus, plugin)
             if (!client) {
                 data.error = 'Invary Appraiser API URL is not configured. Please set it in the plugin settings.'
                 vm.object = data
                 return getRenderer().renderTemplate('hbs/invaryTab', vm)
             }
 
+            data.appraiserWarning = client.warning
             Map rollup = client.fetchInstanceReport(instance.id)
             if (!rollup) {
                 data.error = 'No Invary appraisal is recorded for any vm under this instance. Run the Invary Sensor ' +

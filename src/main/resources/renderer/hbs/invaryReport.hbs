@@ -3,6 +3,10 @@
   {{#if header}}
     {{#with header.[0]}}
 
+    {{#if dataMap.appraiserWarning}}
+      <div class="alert alert-warning"><i class="fa fa-unlock-alt"></i> {{dataMap.appraiserWarning}}</div>
+    {{/if}}
+
     <!-- Fleet Status Banner -->
     <div class="fleet-banner {{dataMap.bannerClass}}">
       <div class="fleet-banner-icon">

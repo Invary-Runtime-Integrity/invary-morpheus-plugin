@@ -60,6 +60,9 @@
 </style>
 
 <div class="invary-instance">
+  {{#if appraiserWarning}}
+    <div class="alert alert-warning"><i class="fa fa-unlock-alt"></i> {{appraiserWarning}}</div>
+  {{/if}}
 
   {{#if error}}
     <p class="text-muted">{{error}}</p>

@@ -3,6 +3,13 @@
 
 package com.invary.hpe.morpheus
 
+import com.morpheusdata.model.NetworkProxy
+import com.sun.net.httpserver.HttpServer
+import org.apache.http.HttpHost
+import org.apache.http.HttpVersion
+import org.apache.http.message.BasicHttpRequest
+import org.apache.http.message.BasicHttpResponse
+import org.apache.http.protocol.BasicHttpContext
 import spock.lang.Specification
 import spock.lang.Unroll
 
@@ -222,5 +229,232 @@ class InvaryCustomerPackageSpec extends Specification {
         // a regenerated customer package is a new URL, which is a different key
         new String(InvaryCustomerPackage.repoPackage('https://invary/next.tar.gz', 'deb')) == 'next'
         new String(InvaryCustomerPackage.repoPackage('https://invary/stable.tar.gz', 'deb')) == 'stable'
+    }
+
+    def "a customer package is revalidated only once the copy held is a minute old"() {
+        given:
+        byte[] bytes = archive([(DEB): 'the deb repo package'.bytes])
+        List<String> asked = Collections.synchronizedList([])
+        HttpServer server = HttpServer.create(new InetSocketAddress('127.0.0.1', 0), 0)
+        server.createContext('/pkg.tar.gz') { exchange ->
+            String match = exchange.requestHeaders.getFirst('If-None-Match')
+            asked << (match ?: 'unconditional')
+            exchange.responseHeaders.add('ETag', '"v1"')
+            if (match == '"v1"') {
+                exchange.sendResponseHeaders(304, -1)
+            } else {
+                exchange.sendResponseHeaders(200, bytes.length)
+                exchange.responseBody.write(bytes)
+            }
+            exchange.close()
+        }
+        server.start()
+        String url = "http://127.0.0.1:${server.address.port}/pkg.tar.gz"
+
+        when:
+        InvaryCustomerPackage.repoPackage(url, 'deb')
+        InvaryCustomerPackage.repoPackage(url, 'deb')
+
+        then:
+        // the second read is within the minute, so the origin is not asked
+        asked == ['unconditional']
+
+        when:
+        InvaryCustomerPackage.CACHE[url].fetchedAt -= InvaryCustomerPackage.REVALIDATE_MILLIS
+        byte[] revalidated = InvaryCustomerPackage.repoPackage(url, 'deb')
+        InvaryCustomerPackage.repoPackage(url, 'deb')
+
+        then:
+        // a 304 starts the minute again
+        asked == ['unconditional', '"v1"']
+        new String(revalidated) == 'the deb repo package'
+
+        cleanup:
+        server.stop(0)
+    }
+
+    // -- The appliance proxy --------------------------------------------------
+
+    static NetworkProxy proxy(Map fields = [:]) {
+        NetworkProxy proxy = new NetworkProxy()
+        ([proxyHost: 'proxy.example', proxyPort: 3128] + fields).each { name, value -> proxy[name] = value }
+        return proxy
+    }
+
+    static final URI PACKAGE_URI = new URI('https://packages.example/pkg.tar.gz')
+
+    def "a customer package is fetched through the appliance proxy"() {
+        when:
+        HttpHost via = InvaryCustomerPackage.proxyFor(proxy(), PACKAGE_URI)
+
+        then:
+        via.hostName == 'proxy.example'
+        via.port == 3128
+    }
+
+    @Unroll
+    def "a customer package is fetched directly when #described"() {
+        expect:
+        InvaryCustomerPackage.proxyFor(configured, PACKAGE_URI) == null
+
+        where:
+        described                               | configured
+        'no proxy is configured'                | null
+        'the proxy names no host'               | proxy(proxyHost: ' ')
+        'its host is in the no-proxy list'      | proxy(noProxy: 'packages.example')
+        'its host is listed in another case'    | proxy(noProxy: 'PACKAGES.example')
+        'its host is listed after commas'       | proxy(noProxy: 'localhost,packages.example')
+        'its host is listed after pipes'        | proxy(noProxy: 'localhost|packages.example')
+        'its host is listed after whitespace'   | proxy(noProxy: 'localhost \n packages.example')
+    }
+
+    def "a no-proxy entry must name the host, not a part of it"() {
+        expect:
+        InvaryCustomerPackage.proxyFor(proxy(noProxy: 'example, .example, packages'), PACKAGE_URI) != null
+    }
+
+    // -- Limits ---------------------------------------------------------------
+
+    /** A gzipped archive of one header, with no body behind it, and the end of the archive. */
+    static byte[] headerOnly(byte[] header) {
+        def bytes = new ByteArrayOutputStream()
+        new GZIPOutputStream(bytes).withCloseable { gz ->
+            gz.write(header)
+            gz.write(new byte[BLOCK * 2])
+        }
+
+        return bytes.toByteArray()
+    }
+
+    def "a repo package larger than the limit is refused before it is read"() {
+        given:
+        // only the header claims the size, so nothing that large is ever built or read
+        int size = (int) InvaryCustomerPackage.MAX_REPO_PKG_BYTES + 1
+
+        when:
+        extract(headerOnly(header(DEB, size, '0' as char)))
+
+        then:
+        def e = thrown(InvaryCustomerPackage.ArchiveException)
+        e.message == "The customer package holds ${DEB} of ${size} bytes, more than the 8 MiB a repo package can be."
+    }
+
+    @Unroll
+    def "a size field of #described is refused as not a tar archive"() {
+        given:
+        byte[] header = header(DEB, 0, '0' as char)
+        Arrays.fill(header, 124, 136, (byte) 0)
+        field.eachWithIndex { b, int i -> header[124 + i] = (byte) b }
+
+        when:
+        extract(headerOnly(header))
+
+        then:
+        def e = thrown(InvaryCustomerPackage.ArchiveException)
+        e.message == 'The customer package is not a valid tar archive.'
+
+        where:
+        described     | field
+        'a negative'  | '-0000000001'.bytes.toList()
+        'a non octal' | '0000000009'.bytes.toList()
+        'base-256'    | [0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x10, 0]
+    }
+
+    def "an archive larger than the limit once decompressed is refused"() {
+        given:
+        // a member nothing wants is skipped, and still counts
+        byte[] archive = archive(['invary-onprem/invary-appraiser.tar.gz': new byte[64 * 1024], (DEB): 'deb'.bytes])
+
+        when:
+        InvaryCustomerPackage.extract(new ByteArrayInputStream(archive), 16 * 1024,
+            System.currentTimeMillis() + 60_000)
+
+        then:
+        def e = thrown(InvaryCustomerPackage.ArchiveException)
+        e.message.endsWith('once decompressed.')
+    }
+
+    def "an archive within the limits is read whole"() {
+        when:
+        def found = InvaryCustomerPackage.extract(new ByteArrayInputStream(archive([(DEB): 'deb'.bytes])),
+            64 * 1024, System.currentTimeMillis() + 60_000)
+
+        then:
+        new String(found.deb) == 'deb'
+    }
+
+    def "a download past its deadline is abandoned"() {
+        when:
+        InvaryCustomerPackage.extract(new ByteArrayInputStream(archive([(DEB): 'deb'.bytes])),
+            InvaryCustomerPackage.MAX_ARCHIVE_BYTES, System.currentTimeMillis() - 1)
+
+        then:
+        def e = thrown(InvaryCustomerPackage.ArchiveException)
+        e.message == 'The customer package did not download within 15 minutes.'
+    }
+
+    def "the limits are stated as #expected"() {
+        expect:
+        InvaryCustomerPackage.bytesText(bytes) == expected
+
+        where:
+        bytes                                    || expected
+        InvaryCustomerPackage.MAX_REPO_PKG_BYTES || '8 MiB'
+        InvaryCustomerPackage.MAX_ARCHIVE_BYTES  || '1 GiB'
+    }
+
+    // -- Redirects ------------------------------------------------------------
+
+    static URI redirect(String from, String to) {
+        def request = new BasicHttpRequest('GET', from)
+        def response = new BasicHttpResponse(HttpVersion.HTTP_1_1, 302, 'Found')
+        response.setHeader('Location', to)
+        return new InvaryCustomerPackage.HttpsOnlyRedirectStrategy().getLocationURI(request, response, new BasicHttpContext())
+    }
+
+    def "a redirect that stays on https is followed"() {
+        expect:
+        redirect('https://packages.example/pkg.tar.gz', 'https://cdn.example/pkg.tar.gz') ==
+            new URI('https://cdn.example/pkg.tar.gz')
+    }
+
+    @Unroll
+    def "a redirect to #to is refused"() {
+        when:
+        redirect('https://packages.example/pkg.tar.gz', to)
+
+        then:
+        def e = thrown(InvaryCustomerPackage.InsecureRedirectException)
+        e.location == new URI(to)
+
+        where:
+        to << ['http://cdn.example/pkg.tar.gz', 'ftp://cdn.example/pkg.tar.gz']
+    }
+
+    def "a refused redirect fails the fetch rather than being treated as transient"() {
+        given:
+        HttpServer server = HttpServer.create(new InetSocketAddress('127.0.0.1', 0), 0)
+        server.createContext('/pkg.tar.gz') { exchange ->
+            exchange.responseHeaders.add('Location', "http://127.0.0.1:${server.address.port}/elsewhere.tar.gz")
+            exchange.sendResponseHeaders(302, -1)
+            exchange.close()
+        }
+        server.start()
+        String url = "http://127.0.0.1:${server.address.port}/pkg.tar.gz"
+
+        // a cached copy would stand in for a transient failure, and must not for this one
+        InvaryCustomerPackage.seedCache(url, [deb: 'cached'.bytes])
+        InvaryCustomerPackage.CACHE[url].fetchedAt = 0
+
+        when:
+        InvaryCustomerPackage.repoPackage(url, 'deb')
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message == "The customer package at ${url} redirected to " +
+                     "http://127.0.0.1:${server.address.port}/elsewhere.tar.gz, which is not an https URL."
+
+        cleanup:
+        server.stop(0)
     }
 }

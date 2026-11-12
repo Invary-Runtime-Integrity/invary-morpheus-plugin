@@ -22,7 +22,7 @@ class InvarySensorConfigSpec extends Specification {
     static Map settings(Map overrides = [:]) {
         return [
             appraiserUrl: 'https://192.0.2.10:8443',
-            allowUntrustedCerts: 'no',
+            sensorAllowUntrustedCerts:'no',
             customerPackageUrl: CUSTOMER_PACKAGE_URL,
         ] + overrides
     }
@@ -130,7 +130,7 @@ class InvarySensorConfigSpec extends Specification {
 
     def "auto trust mode takes the self signed flag from the appraiser"() {
         when:
-        def config = resolve(settings(allowUntrustedCerts: 'auto'), [:], discovery(selfSigned))
+        def config = resolve(settings(sensorAllowUntrustedCerts:'auto'), [:], discovery(selfSigned))
 
         then:
         config.allowUntrusted == expected
@@ -144,7 +144,7 @@ class InvarySensorConfigSpec extends Specification {
     @Unroll
     def "an explicit trust mode of #mode ignores what the appraiser reports"() {
         when:
-        def config = resolve(settings(allowUntrustedCerts: mode))
+        def config = resolve(settings(sensorAllowUntrustedCerts:mode))
 
         then:
         config.allowUntrusted == expected
@@ -157,7 +157,7 @@ class InvarySensorConfigSpec extends Specification {
 
     def "a task trust mode overrides the plugin setting"() {
         when:
-        def config = resolve(settings(allowUntrustedCerts: 'no'),
+        def config = resolve(settings(sensorAllowUntrustedCerts:'no'),
             [(InvarySensorConfig.OPTION_ALLOW_UNTRUSTED): 'yes'])
 
         then:
@@ -179,7 +179,7 @@ class InvarySensorConfigSpec extends Specification {
         int calls = 0
 
         when:
-        def config = resolve(settings(allowUntrustedCerts: 'auto'), [:], { calls++; DISCOVERED })
+        def config = resolve(settings(sensorAllowUntrustedCerts:'auto'), [:], { calls++; DISCOVERED })
 
         then:
         calls == 1
@@ -215,6 +215,87 @@ class InvarySensorConfigSpec extends Specification {
         then:
         config.apiUrl == 'https://a:8443'
         config.sensorUrl == 'https://a:7386'
+    }
+
+    @Unroll
+    def "a reported sensor url of #value is accepted"() {
+        when:
+        def config = resolve(settings(), [:], discovery([sensor_endpoint_url: value]))
+
+        then:
+        config.sensorUrl == expected
+
+        where:
+        value                                  || expected
+        'https://host.example:7386'            || 'https://host.example:7386'
+        'http://10.0.0.1:7386'                 || 'http://10.0.0.1:7386'
+        'https://[fd00::1]:7386'               || 'https://[fd00::1]:7386'
+        'HTTPS://Host-1.example:7386'          || 'HTTPS://Host-1.example:7386'
+        'https://host.example:7386/'           || 'https://host.example:7386'
+        'https://host.example'                 || 'https://host.example'
+        'https://host.example/invary/sensors'  || 'https://host.example/invary/sensors'
+        'https://host.example:443/a_b.c~d-e/'  || 'https://host.example:443/a_b.c~d-e'
+    }
+
+    @Unroll
+    def "a reported sensor url holding #described is refused"() {
+        when:
+        resolve(settings(), [:], discovery([sensor_endpoint_url: value]))
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('reported a sensor endpoint URL that is not an http(s)://host[:port][/path] URL')
+
+        where:
+        described                | value
+        'command substitution'   | 'https://$(id).example:7386'
+        'a backtick'             | 'https://`id`.example:7386'
+        'a semicolon'            | 'https://a.example:7386;id'
+        'a pipe'                 | 'https://a.example:7386|id'
+        'an ampersand'           | 'https://a.example:7386&id'
+        'a double quote'         | 'https://a.example:7386"'
+        'a single quote'         | "https://a.example:7386'"
+        'a space'                | 'https://a.example:7386 x'
+        'a newline'              | 'https://a.example:7386\nid'
+        'a NUL'                  | 'https://a.example' + String.valueOf((char) 0) + ':7386'
+        'user info'              | 'https://u:p@a.example:7386'
+        'a query'                | 'https://a.example:7386?x=1'
+        'a fragment'             | 'https://a.example:7386#x'
+        'a percent escape'       | 'https://a.example:7386/%24%28id%29'
+        'a dot dot segment'      | 'https://a.example:7386/../x'
+        'a dot segment'          | 'https://a.example:7386/./x'
+        'an empty segment'       | 'https://a.example:7386//x'
+        'a substituted path'     | 'https://a.example:7386/$(id)'
+        'another scheme'         | 'ftp://a.example:7386'
+        'a file url'             | 'file:/etc/passwd'
+        'an opaque url'          | 'http:a.example'
+        'no scheme'              | 'a.example:7386'
+        'an empty host'          | 'https://:7386'
+        'an empty port'          | 'https://a.example:'
+        'port zero'              | 'https://a.example:0'
+        'a port too large'       | 'https://a.example:70000'
+        'an underscore host'     | 'https://a_b.example:7386'
+        'an unbracketed ipv6'    | 'https://fd00::1:7386'
+    }
+
+    def "a refused sensor url is quoted back printable and shortened"() {
+        when:
+        resolve(settings(), [:], discovery([sensor_endpoint_url: 'https://a.example:7386\nid' + ('x' * 200)]))
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("'https://a.example:7386?id")
+        !e.message.contains('\n')
+        e.message.endsWith("...'.")
+    }
+
+    def "a sensor url the appraiser did not report is refused"() {
+        when:
+        resolve(settings(), [:], discovery([uses_self_signed_cert: false]))
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('did not report a sensor endpoint URL')
     }
 
     // -- Validation -----------------------------------------------------------
@@ -297,22 +378,17 @@ class InvarySensorConfigSpec extends Specification {
         resolve(settings()).customerPackageUrl == CUSTOMER_PACKAGE_URL
     }
 
-    @Unroll
-    def "a task option of #described defers to the plugin setting"() {
+    def "a task option cannot override the customer package url"() {
         expect:
-        resolve(settings(), [(InvarySensorConfig.OPTION_CUSTOMER_PACKAGE_URL): option])
+        // the appliance fetches the url, so only the administrator's plugin setting may name it;
+        // this is the code the task option had before it was removed
+        resolve(settings(), ['invary-sensor-customer-package-url': 'https://internal.corp/metadata'])
             .customerPackageUrl == CUSTOMER_PACKAGE_URL
-
-        where:
-        described  | option
-        'inherit'  | 'inherit'
-        'blank'    | '   '
-        'absent'   | null
     }
 
-    def "a task option overrides the plugin setting"() {
+    def "a trailing slash is trimmed from the customer package url"() {
         expect:
-        resolve(settings(), [(InvarySensorConfig.OPTION_CUSTOMER_PACKAGE_URL): 'https://artifacts.corp/invary.tar.gz/'])
+        resolve(settings(customerPackageUrl: 'https://artifacts.corp/invary.tar.gz/'))
             .customerPackageUrl == 'https://artifacts.corp/invary.tar.gz'
     }
 
@@ -337,6 +413,16 @@ class InvarySensorConfigSpec extends Specification {
         where:
         // a path to a file on the appliance is the likely mistake, and nothing fetches one
         value << ['/srv/invary/customer.tar.gz', 'ftp://invary/customer.tar.gz', 'static.invary.com/x.tar.gz']
+    }
+
+    def "a customer package url must be https"() {
+        when:
+        resolve(settings(customerPackageUrl: 'http://static.invary.com/package/invary-core-test.tar.gz'))
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message == "Customer Package URL must be an https URL, but was " +
+                     "'http://static.invary.com/package/invary-core-test.tar.gz'."
     }
 
 }

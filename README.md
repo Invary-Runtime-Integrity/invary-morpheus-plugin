@@ -71,6 +71,28 @@ you need:
 Uploading a newer jar replaces the installed plugin rather than adding a second copy.
 
 
+## Trusting the Appraiser Certificate
+
+The plugin verifies the Appraiser API's HTTPS certificate against the Morpheus appliance's
+trusted certificates, and checks that the certificate names the host in the API URL. An
+Appraiser certificate issued by a public CA needs nothing further.
+
+An Appraiser with a self-signed or private-CA certificate - including the self-signed
+certificate `invary-appraiser configure` generates - must have that certificate imported into
+the appliance's trusted certificates. `invary-appraiser morpheus setup` prints the certificate
+to import and an outline of the steps; see also *Import Trusted Certificates* in the HPE
+Morpheus documentation for your appliance version. Until it is imported, the plugin reports
+that the Appraiser's certificate is not trusted.
+
+The **Appraiser Ignore Cert Errors** setting turns verification off. It is not recommended:
+the API token and the integrity results the plugin shows are then unprotected against
+interception, and the plugin shows a warning wherever it presents Appraiser results.
+
+The plugin reaches the Appraiser through the appliance's global network proxy when one is
+configured, so an Appraiser on the local network should be listed in the proxy's no-proxy
+hosts.
+
+
 ## Documentation
 
 For detailed installation, configuration and operational guidance, see the

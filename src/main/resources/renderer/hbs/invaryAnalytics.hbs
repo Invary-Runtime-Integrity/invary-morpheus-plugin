@@ -76,6 +76,10 @@
 
 <div class="invary-analytics">
 
+  {{#if appraiserWarning}}
+    <div class="alert alert-warning"><i class="fa fa-unlock-alt"></i> {{appraiserWarning}}</div>
+  {{/if}}
+
   {{#if error}}
     <p class="text-muted">{{error}}</p>
   {{else}}

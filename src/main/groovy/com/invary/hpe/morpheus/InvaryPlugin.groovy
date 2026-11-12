@@ -69,17 +69,32 @@ class InvaryPlugin extends Plugin {
                 required: false
             ),
             new OptionType(
-                name: 'Allow Untrusted',
-                code: 'invary-allow-untrusted-certs',
+                name: 'Appraiser Ignore Cert Errors',
+                code: 'invary-ignore-appraiser-cert-errors',
+                inputType: OptionType.InputType.CHECKBOX,
+                fieldName: InvarySensorConfig.SETTING_IGNORE_APPRAISER_CERT_ERRORS,
+                fieldLabel: 'Appraiser Ignore Cert Errors',
+                fieldContext: 'config',
+                defaultValue: 'off',
+                helpText: "Skip verification of the Appraiser's HTTPS certificate. Not recommended. " +
+                          "Instead, import a self-signed or private-CA Appraiser certificate into the " +
+                          "appliance's trusted certificates (see 'invary-appraiser morpheus setup')",
+                displayOrder: 2,
+                required: false
+            ),
+            new OptionType(
+                name: 'Sensor Allow Untrusted Certs',
+                code: 'invary-default-sensor-allow-untrusted-certs',
                 inputType: OptionType.InputType.SELECT,
                 optionSource: InvaryOptionSourceProvider.SOURCE_CERT_TRUST_MODES,
                 optionSourceType: 'plugin',
-                fieldName: InvarySensorConfig.SETTING_ALLOW_UNTRUSTED,
-                fieldLabel: 'Allow Untrusted',
+                fieldName: InvarySensorConfig.SETTING_SENSOR_ALLOW_UNTRUSTED,
+                fieldLabel: 'Sensor Allow Untrusted Certs',
                 fieldContext: 'config',
                 defaultValue: InvarySensorConfig.TRUST_AUTO,
-                helpText: 'Whether sensors will accept an untrusted appraiser certificate.',
-                displayOrder: 2,
+                helpText: 'Whether installed sensors accept an untrusted appraiser certificate. ' +
+                          "Does not affect this plugin's own connection to the Appraiser.",
+                displayOrder: 3,
                 required: false
             ),
             new OptionType(
@@ -93,7 +108,7 @@ class InvaryPlugin extends Plugin {
                 fieldContext: 'config',
                 defaultValue: InvarySensorConfig.REMEDIATION_NONE,
                 helpText: 'Action to take on machines lacking integrity',
-                displayOrder: 3,
+                displayOrder: 4,
                 required: false
             ),
             new OptionType(
@@ -103,9 +118,9 @@ class InvaryPlugin extends Plugin {
                 fieldName: InvarySensorConfig.SETTING_CUSTOMER_PACKAGE_URL,
                 fieldLabel: 'Customer Package URL',
                 fieldContext: 'config',
-                helpText: 'URL of your Invary Customer Package (.tar.gz). ' +
+                helpText: 'HTTPS URL of your Invary Customer Package (.tar.gz). ' +
                           ' May be re-hosted internally.',
-                displayOrder: 4,
+                displayOrder: 5,
                 required: true
             ),
         ]
@@ -116,5 +131,8 @@ class InvaryPlugin extends Plugin {
      */
     @Override
     void onDestroy() {
+        InvaryHttpClients.shutdown()
+        InvaryCustomerPackage.clearCache()
+        InvaryAppraiserAvailability.clear()
     }
 }

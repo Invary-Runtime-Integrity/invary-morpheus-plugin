@@ -59,7 +59,7 @@ class InvarySensorInstaller {
         log.info("Target reports ${probe}")
 
         String script = buildScript(name, config, probe)
-        log.debug("Running on ${name}:\n${script}")
+        log.debug("Running on ${name}:\n${InvarySensorScripts.redacted(script)}")
 
         TaskResult installed = execute(server, script)
         if (!succeeded(installed)) {
@@ -106,7 +106,8 @@ class InvarySensorInstaller {
         // fetched here rather than before the probe, so a node that cannot be installed on is
         // refused without anything being downloaded for it. The appliance holds the archive, so
         // only the first server of a fleet pays for the transfer
-        byte[] repoPackage = InvaryCustomerPackage.repoPackage(config.customerPackageUrl, probe.pkgFmt)
+        byte[] repoPackage = InvaryCustomerPackage.repoPackage(config.customerPackageUrl, probe.pkgFmt,
+                                                               InvaryHttpClients.globalProxy(morpheus))
         log.info("Read the ${probe.pkgFmt} repo package (${repoPackage.length} bytes) from the " +
                  "customer package at ${config.customerPackageUrl}")
 

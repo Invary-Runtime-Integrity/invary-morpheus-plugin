@@ -1,4 +1,7 @@
 <div id="vme-tab" class="vme-tab-container">
+  {{#if appraiserWarning}}
+    <div class="alert alert-warning"><i class="fa fa-unlock-alt"></i> {{appraiserWarning}}</div>
+  {{/if}}
   {{#if error}}
     <div class="alert alert-warning"><i class="fa fa-exclamation-triangle"></i> {{error}}</div>
   {{/if}}

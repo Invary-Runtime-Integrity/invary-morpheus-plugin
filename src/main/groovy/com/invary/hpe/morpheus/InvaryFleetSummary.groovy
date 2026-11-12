@@ -36,12 +36,13 @@ class InvaryFleetSummary {
         Map summary = empty()
 
         try {
-            InvaryAppraiserClient client = InvarySettings.appraiserClient(morpheus, plugin)
+            InvaryAppraiserClient client = InvarySettings.interactiveClient(morpheus, plugin)
             if (!client) {
                 summary.error = 'The Invary Appraiser API URL is not configured.'
                 return summary
             }
 
+            summary.appraiserWarning = client.warning
             Map report = client.fetchFleetReport()
             if (report == null) {
                 summary.error = 'The Invary Appraiser did not report any integrity results.'
@@ -53,7 +54,9 @@ class InvaryFleetSummary {
             summary.putAll(counts(summary.endpoints as List))
         } catch (Exception e) {
             log.error("Could not read the Invary fleet report: ${e.message}", e)
+            String warning = summary.appraiserWarning
             summary = empty()
+            summary.appraiserWarning = warning
             summary.error = "Could not read the Invary fleet report: ${e.message}"
         }
 
@@ -87,10 +90,7 @@ class InvaryFleetSummary {
 
     /** The ids of the Morpheus servers the tenant may see, as Morpheus reports them. */
     static Set<String> visibleServerIds(MorpheusContext morpheus, Account account) {
-        List projections = morpheus.async.computeServer
-            .listIdentityProjections(new DataQuery(account))
-            .toList()
-            .blockingGet()
+        List projections = morpheus.services.computeServer.listIdentityProjections(new DataQuery(account))
 
         return projections.collect { it.id?.toString() }.findAll { it } as Set
     }
@@ -113,7 +113,7 @@ class InvaryFleetSummary {
     }
 
     static Map empty() {
-        return [error: null, total: 0, passing: 0, failing: 0, offline: 0, endpoints: []]
+        return [error: null, appraiserWarning: null, total: 0, passing: 0, failing: 0, offline: 0, endpoints: []]
     }
 
     /**

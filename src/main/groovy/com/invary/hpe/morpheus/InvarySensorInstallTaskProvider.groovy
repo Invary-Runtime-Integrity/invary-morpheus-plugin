@@ -160,31 +160,17 @@ class InvarySensorInstallTaskProvider implements TaskProvider, ExecutableTaskInt
                 required: false
             ),
             new OptionType(
-                name: 'Allow Untrusted Certs',
+                name: 'Sensor Allow Untrusted Certs',
                 code: InvarySensorConfig.OPTION_ALLOW_UNTRUSTED,
                 inputType: OptionType.InputType.SELECT,
                 optionSource: InvaryOptionSourceProvider.SOURCE_CERT_TRUST_MODES_INHERIT,
                 optionSourceType: 'plugin',
-                fieldName: 'allowUntrustedCerts',
-                fieldLabel: 'Allow Untrusted Certificates',
+                fieldName: 'sensorAllowUntrustedCerts',
+                fieldLabel: 'Sensor Allow Untrusted Certs',
                 fieldContext: 'config',
                 defaultValue: InvarySensorConfig.INHERIT,
                 helpText: 'Whether the installed sensor accepts an untrusted appraiser certificate.',
                 displayOrder: 3,
-                required: false
-            ),
-            new OptionType(
-                name: 'Customer Package URL',
-                code: InvarySensorConfig.OPTION_CUSTOMER_PACKAGE_URL,
-                inputType: OptionType.InputType.TEXT,
-                fieldName: 'customerPackageUrl',
-                fieldLabel: 'Customer Package URL',
-                fieldContext: 'config',
-                defaultValue: InvarySensorConfig.INHERIT,
-                helpText: "URL of the Invary customer package (.tar.gz) the package repository " +
-                          "configuration is read from. Enter ${InvarySensorConfig.INHERIT} to use " +
-                          "the URL configured in the plugin settings.",
-                displayOrder: 4,
                 required: false
             ),
         ]
@@ -258,16 +244,18 @@ class InvarySensorInstallTaskProvider implements TaskProvider, ExecutableTaskInt
                 throw new IllegalArgumentException('No target was supplied to install the Invary Sensor on.')
             }
 
-            InvarySensorConfig config = resolveConfig(task, server, instance)
+            Map settings = InvarySettings.load(morpheus, plugin)
+            InvarySensorConfig config = resolveConfig(task, settings, server, instance)
             log.info("Resolved Invary Sensor configuration: ${config}")
 
             InvarySensorInstaller.Result result = new InvarySensorInstaller(morpheus).install(server, config)
 
+            String warning = InvarySettings.appraiserWarning(settings)
             return new TaskResult(
                 success: result.success,
                 exitCode: result.exitCode,
                 msg: result.message,
-                output: result.output,
+                output: warning ? "WARNING: ${warning}\n\n${result.output ?: ''}".toString() : result.output,
                 error: result.success ? '' : result.message
             )
         } catch (IllegalArgumentException e) {
@@ -283,15 +271,14 @@ class InvarySensorInstallTaskProvider implements TaskProvider, ExecutableTaskInt
      * Resolves the plugin settings and task options into the configuration an installation
      * needs, discovering anything left to the appraiser.
      */
-    private InvarySensorConfig resolveConfig(Task task, ComputeServer server, Instance instance) {
-        Map settings = InvarySettings.load(morpheus, plugin)
+    private InvarySensorConfig resolveConfig(Task task, Map settings, ComputeServer server, Instance instance) {
         Map options = optionValues(task)
         Long instanceId = resolveInstanceId(server, instance)
         if (!instanceId) {
             log.info("Server ${server?.id} belongs to no Morpheus instance; the sensor is tagged with the server alone")
         }
 
-        InvaryAppraiserClient client = InvarySettings.appraiserClient(settings)
+        InvaryAppraiserClient client = InvarySettings.appraiserClient(morpheus, settings)
         Closure<Map> discovery = {
             if (!client) {
                 return null
@@ -337,9 +324,7 @@ class InvarySensorInstallTaskProvider implements TaskProvider, ExecutableTaskInt
 
         if (server?.id) {
             try {
-                Workload workload = morpheus.async.workload
-                    .find(new DataQuery().withFilter('server.id', server.id))
-                    .blockingGet()
+                Workload workload = morpheus.services.workload.find(new DataQuery().withFilter('server.id', server.id))
 
                 if (workload?.instance?.id) {
                     return workload.instance.id

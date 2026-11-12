@@ -70,13 +70,14 @@ class InvaryServerTabProvider extends AbstractServerTabProvider implements Serve
         Map data = [server: server, tabTitle: 'Invary Info', error: null]
 
         try {
-            InvaryAppraiserClient client = InvarySettings.appraiserClient(morpheus, plugin)
+            InvaryAppraiserClient client = InvarySettings.interactiveClient(morpheus, plugin)
             if (!client) {
                 data.error = 'Invary Appraiser API URL is not configured. Please set it in the plugin settings.'
                 vm.object = data
                 return getRenderer().renderTemplate('hbs/invaryTab', vm)
             }
 
+            data.appraiserWarning = client.warning
             Map appraisal = client.fetchServerAppraisal(server.id)
             if (appraisal) {
                 data.putAll(InvaryAppraisalView.detail(appraisal))

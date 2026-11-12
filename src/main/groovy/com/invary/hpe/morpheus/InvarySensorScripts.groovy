@@ -295,6 +295,12 @@ echo "config=\$([ -f ${LINUX_CONFIG} ] && base64 -w0 ${LINUX_CONFIG} || true)"
 """
     }
 
+    /** The package managers the install drives, by the package format each installs. */
+    private static final Map<String, List<String>> PACKAGE_TOOLS = [
+        deb: ['apt-get'],
+        rpm: ['dnf', 'yum'],
+    ].asImmutable()
+
     /** The values a probe reported back. */
     @ToString(includeNames = true, includePackage = false, excludes = ['config'])
     static class Probe {
@@ -337,13 +343,18 @@ echo "config=\$([ -f ${LINUX_CONFIG} ] && base64 -w0 ${LINUX_CONFIG} || true)"
      */
     static Probe parseProbe(String output) {
         String encoded = field(output, 'config')
+        String pkgFmt = reported(field(output, 'pkgfmt'))
+        String pkgTool = reported(field(output, 'pkgtool'))
+
+        // the tool is written into the script as a command, so only a known pair is kept
+        boolean known = PACKAGE_TOOLS[pkgFmt]?.contains(pkgTool)
 
         return new Probe(
             arch: packageArch(field(output, 'arch'), output),
             installed: field(output, 'installed') == 'yes',
             config: encoded ? new String(encoded.decodeBase64(), 'UTF-8') : null,
-            pkgFmt: reported(field(output, 'pkgfmt')),
-            pkgTool: reported(field(output, 'pkgtool')),
+            pkgFmt: known ? pkgFmt : null,
+            pkgTool: known ? pkgTool : null,
             shellInstall: field(output, 'shellinstall') == 'yes',
             pkgVersion: reported(field(output, 'pkgversion')),
             repoPackages: list(field(output, 'release')),
@@ -757,8 +768,45 @@ echo "config=\$([ -f ${LINUX_CONFIG} ] && base64 -w0 ${LINUX_CONFIG} || true)"
         return '[' + (values ?: []).collect { tomlString(it) }.join(', ') + ']'
     }
 
+    /** The escapes a TOML basic string has a name for, other than the backslash and quote. */
+    private static final Map<Character, String> TOML_ESCAPES = [
+        ('\b' as char): '\\b',
+        ('\t' as char): '\\t',
+        ('\n' as char): '\\n',
+        ('\f' as char): '\\f',
+        ('\r' as char): '\\r',
+    ].asImmutable()
+
+    /**
+     * A TOML basic string. Control characters are escaped as well as backslashes and quotes,
+     * because a basic string may not hold them raw and a newline would end the line it is on.
+     */
     static String tomlString(String value) {
-        return '"' + (value ?: '').replace('\\', '\\\\').replace('"', '\\"') + '"'
+        StringBuilder out = new StringBuilder('"')
+
+        for (char c : (value ?: '').toCharArray()) {
+            if (c == '\\' as char || c == '"' as char) {
+                out.append('\\').append(c)
+            } else if (TOML_ESCAPES.containsKey(c)) {
+                out.append(TOML_ESCAPES[c])
+            } else if (c < (0x20 as char) || c == (0x7f as char)) {
+                // built in two parts, so the source holds no backslash-u sequence for the
+                // compiler to take as a Unicode escape
+                out.append('\\').append('u').append(String.format('%04X', (int) c))
+            } else {
+                out.append(c)
+            }
+        }
+
+        return out.append('"').toString()
+    }
+
+    /**
+     * A value as a single-quoted shell word, which the shell takes literally. A quote inside it
+     * closes the quoting, is itself escaped, and reopens it.
+     */
+    static String shellQuote(String value) {
+        return "'" + (value ?: '').replace("'", "'\\''") + "'"
     }
 
     /** A basic or literal TOML string, capturing its contents. */
@@ -776,17 +824,40 @@ echo "config=\$([ -f ${LINUX_CONFIG} ] && base64 -w0 ${LINUX_CONFIG} || true)"
         return strings
     }
 
-    /** Reads the contents of a basic string, where a backslash quotes the character after it. */
+    /** The characters the named escapes of a TOML basic string stand for. */
+    private static final Map<Character, Character> TOML_UNESCAPES = [
+        ('b' as char): ('\b' as char),
+        ('t' as char): ('\t' as char),
+        ('n' as char): ('\n' as char),
+        ('f' as char): ('\f' as char),
+        ('r' as char): ('\r' as char),
+    ].asImmutable()
+
+    /**
+     * Reads the contents of a basic string: the named escapes, a backslash followed by u and four
+     * hex digits or U and eight, and otherwise a backslash quoting the character after it.
+     */
     private static String unescape(String value) {
         StringBuilder out = new StringBuilder()
 
         for (int i = 0; i < value.length(); i++) {
             char c = value.charAt(i)
-            if (c == '\\' as char && i + 1 < value.length()) {
-                i++
-                out.append(value.charAt(i))
-            } else {
+            if (c != '\\' as char || i + 1 >= value.length()) {
                 out.append(c)
+                continue
+            }
+
+            char escaped = value.charAt(++i)
+            int digits = escaped == 'u' as char ? 4 : escaped == 'U' as char ? 8 : 0
+            String hex = digits ? value.substring(i + 1, Math.min(value.length(), i + 1 + digits)) : null
+
+            if (TOML_UNESCAPES.containsKey(escaped)) {
+                out.append(TOML_UNESCAPES[escaped])
+            } else if (hex != null && hex.length() == digits && hex ==~ /[0-9A-Fa-f]+/) {
+                out.appendCodePoint(Integer.parseInt(hex, 16))
+                i += digits
+            } else {
+                out.append(escaped)
             }
         }
 
@@ -1048,10 +1119,14 @@ fi
         return """\
 step "writing \$CFG"
 mkdir -p "\$(dirname "\$CFG")"
-base64 -d > "\$CFG" <<'INVARY_TOML_B64'
+# the file names an appraiser and carries the machine's tags, and nothing but root reads it.
+# the umask covers a file created here and stays in the subshell, since apt reads the keyring
+# the repo package installs as an unprivileged user; the chmod covers a file that already existed.
+# the subshell drops the inherited ERR trap, so a failure is restored once, by this shell
+( trap - ERR; umask 077; base64 -d > "\$CFG" <<'INVARY_TOML_B64'
 ${encoded}
 INVARY_TOML_B64
-# the file names an appraiser and carries the machine's tags, and nothing but root reads it
+)
 chmod 0600 "\$CFG"
 """
     }
@@ -1075,6 +1150,51 @@ INVARY_REPO_B64
 # the package carries the repository credentials, and nothing but root reads it
 chmod 0600 "\$RELPKG"
 """
+    }
+
+    /** Opens a heredoc carrying a base64 payload, capturing its delimiter. */
+    private static final Pattern BASE64_HEREDOC = Pattern.compile('<<\'([A-Z0-9_]+_B64)\'\\s*$')
+
+    /**
+     * A script in a form fit for a log: the body of each base64 heredoc is replaced by its
+     * decoded size. The repo package carries the repository credentials, which the script keeps
+     * out of the transcript and a logged script must not reveal either.
+     */
+    static String redacted(String script) {
+        if (!script) {
+            return script
+        }
+
+        List<String> out = []
+        String delimiter = null
+        StringBuilder payload = null
+
+        for (String line : script.split('\n', -1)) {
+            if (delimiter != null) {
+                if (line == delimiter) {
+                    out << "<${payload.toString().decodeBase64().length} bytes base64>".toString()
+                    out << line
+                    delimiter = null
+                } else {
+                    payload.append(line.trim())
+                }
+                continue
+            }
+
+            out << line
+            def matcher = BASE64_HEREDOC.matcher(line)
+            if (matcher.find()) {
+                delimiter = matcher.group(1)
+                payload = new StringBuilder()
+            }
+        }
+
+        // an unterminated heredoc is still not logged
+        if (delimiter != null) {
+            out << "<${payload.toString().decodeBase64().length} bytes base64>".toString()
+        }
+
+        return out.join('\n')
     }
 
     /**
@@ -1101,7 +1221,10 @@ chmod 0600 "\$RELPKG"
         boolean deb = probe.pkgFmt == 'deb'
         String tool = probe.pkgTool
 
+        // the sensor URL is the appraiser's to report, so it reaches the script only as a
+        // quoted assignment and is used through the variable
         String vars = """
+SENSOR_URL=${shellQuote(config.sensorUrl)}
 RELPKG=\$(mktemp /tmp/invary-release-XXXXXX)
 UNITBAK=/tmp/invary-unit-\$STAMP.bak
 REPOBAK=/tmp/invary-repo-\$STAMP
@@ -1245,7 +1368,7 @@ if [ "\$CHECK_RC" = 6 ]; then
     # an unreachable appraiser does not stop a sensor: it starts, stays up and keeps trying,
     # so failing here would abandon an install that is correct and would have recovered on its
     # own. Every other failure is structural and the sensor cannot resolve it by waiting
-    echo "The Invary Sensor cannot reach the appraiser at ${config.sensorUrl} from this machine."
+    echo "The Invary Sensor cannot reach the appraiser at \$SENSOR_URL from this machine."
     echo "Connectivity was the only check that failed, so disregard the kernel advice above:"
     echo "the sensor is installed and configured, and reports as soon as the appraiser answers."
     echo "If this machine never appears, look for a firewall between it and that address."
@@ -1344,7 +1467,7 @@ chmod 0700 "\$REPOBAK"
 """)
 
         if (probe.repoPackages) {
-            String owned = probe.repoPackages.collect { "'${it}'" }.join(' ')
+            String owned = probe.repoPackages.collect { shellQuote(it) }.join(' ')
 
             step.append("""
 for old in ${owned}; do
@@ -1374,7 +1497,7 @@ done
             // a repository file no package owns was written by hand or by the customer's own
             // automation. Left in place it resolves the sensor from a second channel, which is
             // the state removing the owned package above exists to prevent
-            String files = probe.foreignRepos.collect { "'${it}'" }.join(' ')
+            String files = probe.foreignRepos.collect { shellQuote(it) }.join(' ')
 
             step.append("""
 for unowned in ${files}; do

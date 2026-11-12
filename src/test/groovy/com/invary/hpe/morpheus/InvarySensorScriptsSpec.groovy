@@ -3,6 +3,7 @@
 
 package com.invary.hpe.morpheus
 
+import spock.lang.Requires
 import spock.lang.Specification
 import spock.lang.Unroll
 
@@ -743,6 +744,42 @@ cpu = 2.0
         parsed.foreignRepos.isEmpty()
     }
 
+    @Unroll
+    def "a probe reporting #fmt with #tool keeps both"() {
+        when:
+        def parsed = InvarySensorScripts.parseProbe("arch=x86_64\ninstalled=no\npkgfmt=${fmt}\npkgtool=${tool}\n")
+
+        then:
+        parsed.pkgFmt == fmt
+        parsed.pkgTool == tool
+
+        where:
+        fmt   | tool
+        'deb' | 'apt-get'
+        'rpm' | 'dnf'
+        'rpm' | 'yum'
+    }
+
+    @Unroll
+    def "a probe reporting #described reports no package manager"() {
+        when:
+        def parsed = InvarySensorScripts.parseProbe("arch=x86_64\ninstalled=no\npkgfmt=${fmt}\npkgtool=${tool}\n")
+
+        then:
+        parsed.pkgFmt == null
+        parsed.pkgTool == null
+
+        where:
+        described                | fmt    | tool
+        'a command substitution' | 'rpm'  | '$(id)'
+        'a command list'         | 'rpm'  | 'dnf;id'
+        'an unknown tool'        | 'rpm'  | 'zypper'
+        'an unknown format'      | 'apk'  | 'dnf'
+        'a mismatched pair'      | 'deb'  | 'dnf'
+        'a format alone'         | 'deb'  | 'none'
+        'a tool alone'           | 'none' | 'apt-get'
+    }
+
     def "the package fields survive a transport that renders output as a map"() {
         when:
         def parsed = InvarySensorScripts.parseProbe(
@@ -1182,7 +1219,8 @@ cpu = 2.0
 
         expect:
         script.contains('if [ "$CHECK_RC" = 6 ]')
-        script.contains('cannot reach the appraiser at https://192.0.2.10:7386')
+        script.contains("SENSOR_URL='https://192.0.2.10:7386'")
+        script.contains('cannot reach the appraiser at $SENSOR_URL')
 
         and:
         // the start still happens -- the connectivity branch does not exit
@@ -1217,7 +1255,128 @@ cpu = 2.0
     }
 
     def "the configuration is written readable only by root"() {
+        when:
+        def script = packageScript()
+        def lines = script.readLines()
+        int write = lines.findIndexOf { it.contains('base64 -d > "$CFG"') }
+        int close = lines.findIndexOf(write) { it == ')' }
+
+        then:
+        // created under a restrictive umask, in a subshell that cannot run the restore itself
+        lines[write] == '( trap - ERR; umask 077; base64 -d > "$CFG" <<\'INVARY_TOML_B64\''
+        lines[close - 1] == 'INVARY_TOML_B64'
+        lines[close + 1] == 'chmod 0600 "$CFG"'
+
+        and:
+        // the umask reaches nothing else, since apt reads its keyrings as an unprivileged user
+        lines.findAll { it.contains('umask') && !it.trim().startsWith('#') } == [lines[write]]
+    }
+
+    // -- What is logged of a script -------------------------------------------
+
+    def "a script is logged with the base64 payloads replaced by their size"() {
+        given:
+        byte[] repoPackage = 'machine packages.invary.com login u password marker-secret'.bytes
+        def c = config()
+        String merged = InvarySensorScripts.mergeToml(null, c)
+        String script = InvarySensorScripts.linuxPackageScript(c, probe(), merged, repoPackage)
+
+        // the payloads as the script carries them, the repo package wrapped onto lines
+        String repoEncoded = repoPackage.encodeBase64().toString().toList().collate(76)*.join('').join('\n')
+        String tomlEncoded = merged.getBytes('UTF-8').encodeBase64().toString()
+
+        when:
+        String logged = InvarySensorScripts.redacted(script)
+
+        then:
+        script.contains(repoEncoded)
+        script.contains(tomlEncoded)
+
+        and:
+        // only the payloads change: every other line is logged as it is run
+        logged == script
+            .replace(repoEncoded, "<${repoPackage.length} bytes base64>")
+            .replace(tomlEncoded, "<${merged.getBytes('UTF-8').length} bytes base64>")
+    }
+
+    def "a payload spread over lines is measured whole"() {
+        given:
+        byte[] bytes = (0..<200).collect { it as byte } as byte[]
+        String encoded = bytes.encodeBase64().toString().toList().collate(76)*.join('').join('\n')
+
         expect:
-        packageScript().contains('chmod 0600 "$CFG"')
+        InvarySensorScripts.redacted("a\ncat <<'X_B64'\n${encoded}\nX_B64\nb") ==
+            "a\ncat <<'X_B64'\n<200 bytes base64>\nX_B64\nb"
+    }
+
+    def "a script without payloads is logged unchanged"() {
+        expect:
+        InvarySensorScripts.redacted("echo one\ncat <<'EOF'\ntwo\nEOF\n") == "echo one\ncat <<'EOF'\ntwo\nEOF\n"
+    }
+
+    // -- What the appraiser and the node report reaches the shell quoted ------
+
+    def "the sensor url reaches the script only as a quoted assignment"() {
+        when:
+        def script = packageScript([:], [sensorUrl: 'https://marker.example:7386'])
+
+        then:
+        // the configuration carrying it is written from base64, so this is the only place
+        script.readLines().findAll { it.contains('marker.example') } == ["SENSOR_URL='https://marker.example:7386'"]
+        script.contains('echo "The Invary Sensor cannot reach the appraiser at $SENSOR_URL from this machine."')
+    }
+
+    def "package names and repository files the node reports are quoted for the shell"() {
+        when:
+        def script = packageScript(repoPackages: ["invary-x'\$(id)"], foreignRepos: ["/etc/apt/sources.list.d/a'`id`.list"])
+
+        then:
+        script.contains("for old in 'invary-x'\\''\$(id)'; do")
+        script.contains("for unowned in '/etc/apt/sources.list.d/a'\\''`id`.list'; do")
+    }
+
+    @Unroll
+    def "a value quoted for the shell is quoted as #described"() {
+        expect:
+        InvarySensorScripts.shellQuote(value) == expected
+
+        where:
+        described       | value      || expected
+        'is'            | 'a b'      || "'a b'"
+        'an empty word' | null       || "''"
+        'with a quote'  | "it's"     || "'it'\\''s'"
+    }
+
+    @Requires({ new File('/bin/bash').canExecute() })
+    def "the shell reads back exactly what was quoted"() {
+        given:
+        String value = "it's \$(id) `id` \\ \"q\"\nnext ; | &"
+
+        when:
+        def process = ['/bin/bash', '-c', "printf %s ${InvarySensorScripts.shellQuote(value)}"].execute()
+        String output = process.text
+        process.waitFor()
+
+        then:
+        output == value
+    }
+
+    def "control characters in a toml string are escaped onto one line"() {
+        given:
+        String value = 'a\nb\tc\rd' + String.valueOf((char) 1) + String.valueOf((char) 0x7f) + 'e"f\\g'
+
+        when:
+        String rendered = InvarySensorScripts.tomlString(value)
+
+        then:
+        rendered == '"a\\nb\\tc\\rd' + '\\' + 'u0001' + '\\' + 'u007Fe\\"f\\\\g"'
+        !rendered.contains('\n')
+        InvarySensorScripts.tomlStrings(InvarySensorScripts.tomlArray([value])) == [value]
+    }
+
+    def "unicode escapes in a toml string are read back"() {
+        expect:
+        InvarySensorScripts.tomlStrings('["a' + '\\' + 'u0041b' + '\\' + 'U0001F600c"]') ==
+            ['aAb' + new String(Character.toChars(0x1F600)) + 'c']
     }
 }

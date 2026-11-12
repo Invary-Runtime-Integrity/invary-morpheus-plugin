@@ -11,7 +11,8 @@ import groovy.util.logging.Slf4j
  * options and the instance being installed to.
  *
  * Each overridable setting is resolved by taking the task value unless it is `inherit`, then
- * the plugin setting unless it is blank, and finally the documented default.
+ * the plugin setting unless it is blank, and finally the documented default. The appraiser API
+ * URL and the Customer Package URL are plugin settings alone, which no task can override.
  */
 @Slf4j
 @ToString(includeNames = true, includePackage = false)
@@ -44,7 +45,8 @@ class InvarySensorConfig {
 
     static final String SETTING_API_URL = 'appraiserUrl'
     static final String SETTING_API_TOKEN = 'appraiserApiToken'
-    static final String SETTING_ALLOW_UNTRUSTED = 'allowUntrustedCerts'
+    static final String SETTING_IGNORE_APPRAISER_CERT_ERRORS = 'ignoreAppraiserCertErrors'
+    static final String SETTING_SENSOR_ALLOW_UNTRUSTED = 'sensorAllowUntrustedCerts'
     static final String SETTING_REMEDIATION = 'defaultRemediationAction'
     static final String SETTING_CUSTOMER_PACKAGE_URL = 'customerPackageUrl'
 
@@ -54,7 +56,6 @@ class InvarySensorConfig {
     static final String OPTION_REMEDIATION = 'invary-sensor-remediation-action'
     static final String OPTION_INTERVAL = 'invary-sensor-measurement-interval'
     static final String OPTION_ALLOW_UNTRUSTED = 'invary-sensor-allow-untrusted-certs'
-    static final String OPTION_CUSTOMER_PACKAGE_URL = 'invary-sensor-customer-package-url'
 
     // -- Tag prefixes shared with the appraiser's integration -----------------
 
@@ -145,13 +146,10 @@ class InvarySensorConfig {
             return discovered
         }
 
-        String sensorUrl = trimUrl(discoverOnce.call().sensor_endpoint_url)
-        if (!sensorUrl) {
-            throw new IllegalArgumentException("The Invary Appraiser at ${apiUrl} did not report a sensor endpoint URL.")
-        }
+        String sensorUrl = sensorEndpointUrl(discoverOnce.call().sensor_endpoint_url, apiUrl)
 
-        String trustMode = resolveChoice(options[OPTION_ALLOW_UNTRUSTED], settings[SETTING_ALLOW_UNTRUSTED],
-                TRUST_AUTO, CERT_TRUST_MODES, 'Allow Untrusted Certs')
+        String trustMode = resolveChoice(options[OPTION_ALLOW_UNTRUSTED], settings[SETTING_SENSOR_ALLOW_UNTRUSTED],
+                TRUST_AUTO, CERT_TRUST_MODES, 'Sensor Allow Untrusted Certs')
         boolean allowUntrusted = (trustMode == TRUST_AUTO)
                 ? (discoverOnce.call().uses_self_signed_cert as boolean)
                 : (trustMode == TRUST_YES)
@@ -166,28 +164,116 @@ class InvarySensorConfig {
             remediationAction: remediation,
             measurementInterval: resolveInterval(options[OPTION_INTERVAL]),
             tags: buildTags(serverId, instanceId, remediation, options[OPTION_TAGS]),
-            customerPackageUrl: resolveUrl(options[OPTION_CUSTOMER_PACKAGE_URL],
-                settings[SETTING_CUSTOMER_PACKAGE_URL], 'Customer Package URL'),
+            customerPackageUrl: customerPackageUrl(settings[SETTING_CUSTOMER_PACKAGE_URL]),
         )
     }
 
+    /** Printable ASCII other than space, the only characters a sensor endpoint URL may hold. */
+    private static final String URL_CHARACTERS = /^[\x21-\x7e]+$/
+
+    /** A host name of letters, digits and hyphens, or a bracketed IPv6 literal. */
+    private static final String URL_HOST = /^(?:[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*|\[[0-9A-Fa-f:.]+\])$/
+
+    /** Segments of unreserved characters, so nothing the shell or TOML treat specially. */
+    private static final String URL_PATH = /^(?:\/[A-Za-z0-9._~-]+)*\/?$/
+
+    /** How much of a rejected value is quoted back, so a hostile one cannot flood the output. */
+    private static final int QUOTED_LENGTH = 100
+
     /**
-     * Resolves a URL the task may override and the plugin settings stand behind.
+     * Checks the sensor endpoint URL the appraiser reported, which is written into the sensor
+     * configuration and shown by the install script, so it is held to what an appraiser
+     * produces: `http(s)://host[:port]`, with room for a path of plain segments for an appraiser
+     * served behind a reverse proxy.
      *
-     * @throws IllegalArgumentException if neither supplies one, or what they supply is not an
-     *         http or https URL
+     * Stricter than {@link URI}, which accepts `$`, quotes, parentheses and `;` in a host name.
+     *
+     * @throws IllegalArgumentException if the appraiser reported none, or one that is not of that
+     *         form
      */
-    private static String resolveUrl(Object option, Object setting, String label) {
-        String value = trimUrl(inherited(option) ? setting : option)
+    static String sensorEndpointUrl(Object reported, String apiUrl) {
+        String value = trimUrl(reported)
         if (!value) {
-            throw new IllegalArgumentException(
-                "${label} is not configured. Set it to the URL of your Invary Customer Package " +
-                'in the plugin settings or on this task.')
+            throw new IllegalArgumentException("The Invary Appraiser at ${apiUrl} did not report a sensor endpoint URL.")
         }
 
-        if (!(value ==~ /(?i)^https?:\/\/.+/)) {
+        if (!validSensorEndpointUrl(value)) {
             throw new IllegalArgumentException(
-                "${label} must be an http or https URL, but was '${value}'.")
+                "The Invary Appraiser at ${apiUrl} reported a sensor endpoint URL that is not an " +
+                "http(s)://host[:port][/path] URL: '${quoted(value)}'.")
+        }
+
+        return value
+    }
+
+    private static boolean validSensorEndpointUrl(String value) {
+        // checked before parsing, so that URI never decodes or tolerates anything of its own
+        if (!(value ==~ URL_CHARACTERS) || value.contains('%')) {
+            return false
+        }
+
+        URI uri
+        try {
+            uri = new URI(value)
+        } catch (URISyntaxException ignored) {
+            return false
+        }
+
+        // URI leaves the host null when it is not a server-based authority, and leaves
+        // everything after the scheme unparsed for an opaque URI such as `http:host`
+        String scheme = uri.scheme?.toLowerCase()
+        String authority = uri.rawAuthority
+        if (!(scheme in ['http', 'https']) || uri.opaque || !authority) {
+            return false
+        }
+
+        if (uri.rawUserInfo != null || uri.rawQuery != null || uri.rawFragment != null) {
+            return false
+        }
+
+        // the host and port are read from the authority itself, which URI would otherwise
+        // accept as a registry name it cannot split
+        def parts = authority =~ /^(\[[^\]]*\]|[^:\[\]]*)(?::([0-9]{1,5}))?$/
+        if (!parts.matches() || !(parts.group(1) ==~ URL_HOST)) {
+            return false
+        }
+
+        String port = parts.group(2)
+        if (port != null && !((port as int) in 1..65535)) {
+            return false
+        }
+
+        String path = uri.rawPath ?: ''
+        return path ==~ URL_PATH && !path.split('/').any { it in ['.', '..'] }
+    }
+
+    /** A rejected value made safe to show: printable, and no longer than {@link #QUOTED_LENGTH}. */
+    private static String quoted(String value) {
+        String printable = value.replaceAll(/[^\x20-\x7e]/, '?')
+        return printable.length() > QUOTED_LENGTH ? printable.take(QUOTED_LENGTH) + '...' : printable
+    }
+
+    /**
+     * Resolves the Customer Package URL from the plugin settings alone. No task can override it,
+     * since the appliance fetches it from its own network position, and only an administrator
+     * can edit the plugin settings.
+     *
+     * The URL must be https: the package it names configures the repository the sensor is
+     * installed from, with that repository's credentials.
+     *
+     * @throws IllegalArgumentException if it is not configured, or is not an https URL
+     */
+    private static String customerPackageUrl(Object setting) {
+        String value = trimUrl(setting)
+        if (!value) {
+            throw new IllegalArgumentException(
+                'Customer Package URL is not configured. Set it to the URL of your Invary Customer ' +
+                'Package in the plugin settings.')
+        }
+
+        if (!(value ==~ /(?i)^https:\/\/.+/)) {
+            throw new IllegalArgumentException(
+                "Customer Package URL must be an https URL, but was '${quoted(value)}'.")
         }
 
         return value

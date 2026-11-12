@@ -36,12 +36,33 @@ class InvarySettings {
     }
 
     /**
+     * Shown wherever appraiser results are presented while the plugin is not verifying the
+     * appraiser's certificate.
+     */
+    static final String IGNORE_CERT_ERRORS_WARNING =
+        'Appraiser certificate verification is disabled (Appraiser Ignore Cert Errors). Integrity ' +
+        'results and the API token are not protected against interception.'
+
+    /** The values Morpheus may store for a checked checkbox. */
+    private static final Set<String> CHECKED = ['on', 'true', 'yes', '1'] as Set
+
+    /**
      * Builds a client for the configured appraiser API.
      *
      * @return the client, or null when no API URL has been configured
      */
     static InvaryAppraiserClient appraiserClient(MorpheusContext morpheus, Plugin plugin) {
-        return appraiserClient(load(morpheus, plugin))
+        return appraiserClient(morpheus, load(morpheus, plugin))
+    }
+
+    /**
+     * Builds a client for a page view: it waits briefly, and fails at once while the appraiser
+     * is known to be unreachable.
+     *
+     * @return the client, or null when no API URL has been configured
+     */
+    static InvaryAppraiserClient interactiveClient(MorpheusContext morpheus, Plugin plugin) {
+        return appraiserClient(morpheus, load(morpheus, plugin), InvaryAppraiserClient.INTERACTIVE)
     }
 
     /**
@@ -49,9 +70,41 @@ class InvarySettings {
      *
      * @return the client, or null when no API URL has been configured
      */
-    static InvaryAppraiserClient appraiserClient(Map settings) {
+    static InvaryAppraiserClient appraiserClient(MorpheusContext morpheus, Map settings,
+                                                 InvaryAppraiserClient.Budget budget = InvaryAppraiserClient.BACKGROUND) {
         String url = settings?.get(InvarySensorConfig.SETTING_API_URL)?.toString()?.trim()
+        if (!url) {
+            return null
+        }
+
         String token = settings?.get(InvarySensorConfig.SETTING_API_TOKEN)?.toString()?.trim()
-        return url ? new InvaryAppraiserClient(url, token) : null
+        boolean ignoreCertErrors = ignoreAppraiserCertErrors(settings)
+        return new InvaryAppraiserClient(url, token, InvaryHttpClients.get(morpheus, ignoreCertErrors),
+                                         ignoreCertErrors, budget)
+    }
+
+    /** Whether the plugin skips verification of the appraiser's certificate. */
+    static boolean ignoreAppraiserCertErrors(Map settings) {
+        return checked(settings?.get(InvarySensorConfig.SETTING_IGNORE_APPRAISER_CERT_ERRORS))
+    }
+
+    /**
+     * @return the warning to show alongside appraiser results, or null when the appraiser's
+     *         certificate is verified
+     */
+    static String appraiserWarning(Map settings) {
+        return ignoreAppraiserCertErrors(settings) ? IGNORE_CERT_ERRORS_WARNING : null
+    }
+
+    /**
+     * Reads a checkbox setting. Morpheus has stored a checked box as 'on', 'true' and true at
+     * different times, so each of them counts as checked and anything else does not.
+     */
+    static boolean checked(Object value) {
+        if (value instanceof Boolean) {
+            return value
+        }
+
+        return value != null && CHECKED.contains(value.toString().trim().toLowerCase())
     }
 }
